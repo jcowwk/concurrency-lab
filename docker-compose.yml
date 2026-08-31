@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: concurrency-lab-postgres
+    environment:
+      POSTGRES_DB: concurrency_lab
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Redis 는 뒤쪽 단계(분산락 / 원자적 연산)에서 사용한다.
+  # 인프라 뼈대는 처음부터 같이 올려둔다.
+  redis:
+    image: redis:7-alpine
+    container_name: concurrency-lab-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:

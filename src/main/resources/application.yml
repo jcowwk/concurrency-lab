@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: concurrency-lab
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/concurrency_lab
+    username: lab
+    password: lab
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # 학습용: 애플리케이션을 띄울 때마다 스키마를 새로 만든다.
+      ddl-auto: create-drop
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+server:
+  port: 8080
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace
