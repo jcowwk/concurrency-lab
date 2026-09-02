@@ -22,40 +22,36 @@ public class CouponIssueService {
     }
 
     /**
-     * 쿠폰 발급.
+     * 쿠폰 발급 - 조건부 원자적 UPDATE.
      *
-     *   1) 쿠폰 조회
-     *   2) 중복 발급 검사 (existsBy)  - 1차 방어. 정상 케이스에서 불필요한 INSERT/예외를 피한다.
-     *   3) 잔여 수량 검사
-     *   4) 발급 수량 +1, 발급 이력 저장
+     *   1) 쿠폰 존재 확인 (existsById)
+     *   2) 중복 발급 검사 (existsBy)     - 1차 방어
+     *   3) UPDATE ... SET issued_count = issued_count + 1 WHERE issued_count < total_quantity
+     *      영향 행 수 0 이면 소진
+     *   4) 발급 이력 저장 (유니크 제약이 중복의 최종 방어선)
      *
-     * 중복 발급의 최종 보장은 (couponId, userId) DB 유니크 제약이 담당한다.
-     * 동시 요청이 2) existsBy 를 함께 통과하더라도, 두 번째 INSERT 는 제약에 걸려
-     * DataIntegrityViolationException 이 되고, 이를 잡아 IllegalStateException 으로 변환한다.
-     * saveAndFlush 로 INSERT 를 이 자리에서 실행해야 제약 위반을 여기서 포착할 수 있다
-     * (save 만 하면 트랜잭션 커밋 시점에 INSERT 가 나가 catch 밖에서 터진다).
-     *
-     * 3) 잔여 수량(초과 발급)은 이 커밋에서 다루지 않는다 - read-modify-write 이므로 여전히 깨진다.
+     * 초과 발급 방지를 위해 Coupon 엔티티를 읽어 필드를 고치지 않는다. 증가와 상한 검사가
+     * DB 한 문장 안에서 원자적으로 일어나므로 락을 오래 잡지 않고 재시도도 필요 없다.
      */
     @Transactional
     public void issue(Long couponId, Long userId) {
-        Coupon coupon = couponRepository.findById(couponId)
-                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 쿠폰: " + couponId));
+        if (!couponRepository.existsById(couponId)) {
+            throw new IllegalArgumentException("존재하지 않는 쿠폰: " + couponId);
+        }
 
         if (couponIssueRepository.existsByCouponIdAndUserId(couponId, userId)) {
             throw new IllegalStateException("이미 발급받은 쿠폰입니다. userId=" + userId);
         }
 
-        if (coupon.isSoldOut()) {
+        int updated = couponRepository.increaseIssuedCountIfAvailable(couponId);
+        if (updated == 0) {
             throw new IllegalStateException("쿠폰이 모두 소진되었습니다. couponId=" + couponId);
         }
 
-        // coupon 은 영속 상태이므로 필드 변경만으로 flush 시점에 UPDATE 가 나간다(더티 체킹).
-        coupon.increaseIssuedCount();
         try {
             couponIssueRepository.saveAndFlush(new CouponIssue(couponId, userId));
         } catch (DataIntegrityViolationException e) {
-            // existsBy 를 동시에 통과한 요청이 여기서 걸린다.
+            // existsBy 를 동시에 통과한 요청이 여기서 걸린다. 트랜잭션이 롤백되며 3)의 증가도 취소된다.
             throw new IllegalStateException("이미 발급받은 쿠폰입니다. userId=" + userId);
         }
     }
