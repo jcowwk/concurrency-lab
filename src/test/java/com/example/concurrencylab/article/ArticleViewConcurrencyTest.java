@@ -13,12 +13,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 조회수 유실(lost update)을 재현하는 테스트.
+ * 조회수 유실(lost update)을 재현/검증하는 테스트.
  *
- * naive(ArticleViewService) 에서는 최종 viewCount 가 요청 수보다 작아져 실패한다.
- * 예외는 발생하지 않고 카운트만 조용히 사라지는 것이 이 문제의 특징이다.
+ * naive 에서는 최종 viewCount 가 요청 수보다 작아져 실패했다(카운트가 조용히 사라짐).
+ * Redis write-back 방식에서는 INCR 이 원자적이라 유실이 없고, flushViewCounts() 로
+ * 지연 반영한 뒤의 DB view_count 가 정확히 요청 수와 같아야 한다(최종 일관성).
  *
- * 사전 조건: docker compose up -d 로 PostgreSQL 이 떠 있어야 한다.
+ * 사전 조건: docker compose up -d 로 PostgreSQL, Redis 가 떠 있어야 한다.
  */
 @SpringBootTest
 class ArticleViewConcurrencyTest {
@@ -44,6 +45,9 @@ class ArticleViewConcurrencyTest {
         ConcurrencyRunner.Result result = ConcurrencyRunner.run(
                 threadCount,
                 i -> articleViewService.increaseViewCount(articleId));
+
+        // 지연 반영분을 DB 로 내린다(스케줄러가 이미 일부 반영했을 수 있으나 증분이라 합계는 맞다).
+        articleViewService.flushViewCounts();
 
         Article article = articleRepository.findById(articleId).orElseThrow();
 

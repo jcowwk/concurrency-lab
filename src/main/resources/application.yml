@@ -25,6 +25,11 @@ spring:
 server:
   port: 8080
 
+app:
+  view-count:
+    # Redis 에 쌓인 조회수 증가분을 DB 로 반영하는 주기
+    flush-interval-ms: 2000
+
 logging:
   level:
     org.hibernate.SQL: debug
