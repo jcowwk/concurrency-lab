@@ -14,8 +14,11 @@
 
 ## 실행
 ```bash
-docker compose up -d          # postgres, redis
+docker compose up -d          # postgres(5432), redis(6380)
 ./gradlew bootRun
+
+# 동시성 재현/검증 테스트
+./gradlew cleanTest test --tests '*ConcurrencyTest'
 ```
 
 ## 진행 단계 (커밋 순서)
@@ -25,7 +28,8 @@ docker compose up -d          # postgres, redis
 4. `fix(coupon): 중복 발급 방지 - 유니크 제약`
 5. `fix(coupon): 초과 발급 방지 - 비관적 락`
 6. `fix(article): 조회수 유실 방지 - 원자적 UPDATE` ← main
-7. Redis 분산락(Redisson) → Redis 원자연산 / Lua (예정)
+7. `chore: Redis 인프라 추가` ← main
+8. Redis 해결책 브랜치 2개 (`solution/redis-redisson-lock`, `solution/redis-lua`)
 
 각 단계의 트레이드오프 정리는 커밋 메시지 본문과 이 README 에 누적한다.
 
@@ -42,14 +46,28 @@ docker compose up -d          # postgres, redis
 현재 `main` 기준 `CouponConcurrencyTest`, `ArticleViewConcurrencyTest` 전부 GREEN
 (초과 발급 100/100·200 거부, 중복 발급 1건, 조회수 1000/1000 유실 0).
 
-## 초과 발급 해결책 비교 (브랜치)
+## 쿠폰 초과/중복 발급 해결책 비교 (브랜치)
 
-같은 재현 테스트(`CouponConcurrencyTest`)를 서로 다른 방식으로 통과시킨다. 공통 베이스는 유니크 제약 커밋(4).
+같은 재현 테스트(`CouponConcurrencyTest`)를 서로 다른 방식으로 통과시킨다.
+DB 계열 3개는 유니크 제약 커밋(4)이, Redis 계열 2개는 Redis 인프라 커밋(7)이 공통 베이스.
+모든 브랜치에서 초과 발급 100/100·200 거부, 중복 발급 1건으로 GREEN.
+
+### DB 계열
 
 | 브랜치 | 방식 | 정합성 | 성능 / 처리량 | 장애 시나리오 | 적합 상황 |
 |---|---|---|---|---|---|
 | `solution/pessimistic-lock` (= main) | `SELECT ... FOR UPDATE` 로 쿠폰 row 배타 락 | 강함 | 같은 쿠폰 발급이 완전 직렬화. 락 구간에 INSERT+인덱스 갱신 포함 → 커넥션 점유 김 | 락 대기 중 커넥션 풀 고갈, 트랜잭션 장기화 시 데드락/타임아웃. `lock timeout` 설정 필요 | 핫 로우, 단일 DB, 로직이 단순하지 않을 때 |
 | `solution/optimistic-lock` | `@Version` + 트랜잭션 밖 재시도 루프 | 강함 (version CAS) | 충돌 드물면 락 대기 0 으로 유리. 핫 로우에선 재시도 폭증 → 처리량 급락, DB 부하↑ | 재시도가 커넥션 반복 점유. 백오프/재시도 한도 튜닝 필수 | 경합 낮은 자원(유저별 데이터). 선착순 쿠폰엔 부적합 |
-| `solution/atomic-update` | `UPDATE ... SET issued_count = issued_count + 1 WHERE issued_count < total` | 강함 (한 문장 원자적) | 가장 우수. 행 락 유지 시간 최소, 재시도 없음, 엔티티 로딩/더티체킹 생략 | 거의 없음. `@Modifying` 은 영속성 컨텍스트 우회 → 같은 tx 내 엔티티 재사용 주의 | 로직이 SQL 한 줄로 표현 가능할 때 (단순 카운터/재고) |
+| `solution/atomic-update` | `UPDATE ... SET issued_count = issued_count + 1 WHERE issued_count < total` | 강함 (한 문장 원자적) | DB 계열 중 최고. 행 락 유지 시간 최소, 재시도 없음, 엔티티 로딩/더티체킹 생략 | 거의 없음. `@Modifying` 은 영속성 컨텍스트 우회 → 같은 tx 내 엔티티 재사용 주의 | 로직이 SQL 한 줄로 표현 가능할 때 (단순 카운터/재고) |
 
-정리: 단순 카운터형 상한 관리라면 **원자적 UPDATE** 가 1순위. 도메인 규칙이 복잡해 한 문장에 못 담으면 **비관적 락**. **낙관적 락** 은 이 도메인(핫 로우 선착순)엔 맞지 않고, 경합이 낮은 일반 엔티티 수정에 쓴다.
+### Redis 계열 (다중 인스턴스 / DB 부하 분산이 목적)
+
+| 브랜치 | 방식 | 정합성 | 성능 / 처리량 | 장애 시나리오 | 적합 상황 |
+|---|---|---|---|---|---|
+| `solution/redis-redisson-lock` | `RLock("coupon:lock:{id}")` 분산락, 락 밖에서 DB 트랜잭션 수행 | 강함. 단 lease 만료+STW 겹치면 두 노드 동시 진입 가능 → DB 유니크 제약이 최종 방어선 | 같은 쿠폰은 여전히 직렬화 + 매 요청 Redis 왕복 추가 | Redis 다운 = 발급 불가(가용성 종속). 단일 노드 SPOF, 센티넬/클러스터 시 Redlock 안전성 논쟁 | 앱 인스턴스가 여러 대라 JVM 락으로 부족하고, 로직은 DB 에 둬야 할 때 |
+| `solution/redis-lua` | `SISMEMBER→GET/DECR→SADD` 를 Lua 스크립트로 원자 실행, DB 는 사본 | 판정 자체는 강함(원자적). 판정 주체가 Redis → DB 는 최종 일관성. AOF/RDB 유실 시 재고 소실 | 최고. O(1), 락/재시도 없음, 발급 경로에서 DB 제거(큐 비동기화) 가능 | Redis SPOF, 보상 실패 시 Redis-DB drift, 스크립트 예외 시 부분 반영 | 순간 트래픽이 DB 한계를 넘고, 최종 일관성을 감내할 수 있을 때 |
+
+정리:
+- 단일 DB 로 충분하면 **원자적 UPDATE** 가 1순위(단순 카운터/재고). 도메인 규칙이 복잡해 한 문장에 못 담으면 **비관적 락**.
+- **낙관적 락** 은 핫 로우 선착순엔 부적합, 경합 낮은 일반 엔티티 수정용.
+- 앱 인스턴스가 여러 대면 **Redisson 분산락**, DB 자체가 병목이면 **Redis Lua** + 비동기 반영. 둘 다 운영 복잡도와 장애 표면이 커지므로 "DB 로 안 될 때" 꺼내는 카드.
