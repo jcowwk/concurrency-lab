@@ -25,15 +25,19 @@ public class CouponIssueService {
     }
 
     /**
-     * 쿠폰 발급 - 낙관적 락 + 재시도.
-     *
-     * 실제 발급은 {@link CouponIssueProcessor#issueOnce} 가 트랜잭션 1개로 수행한다.
-     * 커밋 시 version 이 어긋나면 ObjectOptimisticLockingFailureException 이 나고,
-     * 여기서 잡아 새 트랜잭션으로 재시도한다. 재시도는 반드시 트랜잭션 경계 밖에서
-     * 이뤄져야 하므로 이 메서드에는 @Transactional 을 붙이지 않는다.
-     *
-     * 경합이 심하면(같은 쿠폰에 수백 요청) 재시도가 누적되어 처리량이 급락한다.
-     * 이것이 낙관적 락의 트레이드오프다 - 충돌이 드물 때만 유리하다.
+     * ─── 초과 발급 해결안 ② 낙관적 락 + 재시도 (STAR) ────────────────────────
+     *  S 300명이 같은 쿠폰 row 를 동시에 노림.
+     *  T 300 동시요청 → 정확히 100건.
+     *  A Coupon 에 @Version. 락을 미리 잡지 않고, 커밋 시 UPDATE ... WHERE version=?
+     *    로 "내가 읽은 뒤 아무도 안 바꿨나"만 검사(CAS). 어긋나면
+     *    ObjectOptimisticLockingFailureException → 여기서 잡아 새 트랜잭션으로 재시도.
+     *    재시도는 트랜잭션 경계 밖이어야 하므로 이 메서드엔 @Transactional 없음
+     *    (충돌 예외는 커밋 시점 = issueOnce() 밖에서 난다).
+     *  R 발급 300→100. 그러나 300건 처리 1.16~1.25s — 원자 UPDATE(0.5s대)보다 2~3배 느림.
+     *    선착순 쿠폰 = 같은 row 에 수백 요청 = 충돌·재시도 폭증.
+     *  결론  "충돌이 예외적일 때 쓰는 기법을 충돌이 일상인 곳에 쓰면 안 된다."
+     *        경합 낮은 자원(유저별 데이터 등) 수정에는 여전히 좋은 선택.
+     * ────────────────────────────────────────────────────────────────────────
      */
     public void issue(Long couponId, Long userId) {
         for (int attempt = 1; ; attempt++) {
