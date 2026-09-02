@@ -35,11 +35,13 @@ public class CouponIssueService {
      * saveAndFlush 로 INSERT 를 이 자리에서 실행해야 제약 위반을 여기서 포착할 수 있다
      * (save 만 하면 트랜잭션 커밋 시점에 INSERT 가 나가 catch 밖에서 터진다).
      *
-     * 3) 잔여 수량(초과 발급)은 이 커밋에서 다루지 않는다 - read-modify-write 이므로 여전히 깨진다.
+     * 초과 발급은 findByIdForUpdate (SELECT ... FOR UPDATE) 로 막는다. 같은 쿠폰에 대한
+     * 동시 발급이 쿠폰 row 배타 락으로 직렬화되므로, 3) 잔여 수량 검사와 4) issuedCount += 1
+     * 이 한 트랜잭션 안에서 원자적으로 수행된다.
      */
     @Transactional
     public void issue(Long couponId, Long userId) {
-        Coupon coupon = couponRepository.findById(couponId)
+        Coupon coupon = couponRepository.findByIdForUpdate(couponId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 쿠폰: " + couponId));
 
         if (couponIssueRepository.existsByCouponIdAndUserId(couponId, userId)) {
