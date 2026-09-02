@@ -13,6 +13,33 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+/*
+ * ═══ 동시성 해결: 게시글 조회수 유실 (STAR) ═══════════════════════════════════════
+ *
+ *  S 상황  "조회수 읽기 → +1 → 저장"(read-modify-write). 1000회 동시 조회 시
+ *          동시 트랜잭션이 같은 값을 읽고 같은 값을 써서 증가분이 사라짐.
+ *          예외 하나 없이 조용히 유실된다.
+ *
+ *  T 과제  1000회 조회 → 정확히 1000. + 조회 트래픽이 커도 DB 쓰기 부하가 폭증하지 않기.
+ *
+ *  A 조치  조회수는 "몇 초 뒤처져도 되는" 값 → 최종 일관성 허용.
+ *          · 조회 시: DB 안 쓰고 Redis INCR 만(article:view:delta:{id}) + dirty set 등록.
+ *            INCR 은 원자적이라 동시 조회에도 유실 0.
+ *          · 주기적으로(@Scheduled 2s) flushViewCounts() 가 델타를 DB 에 일괄 반영.
+ *            다중 인스턴스 중복 방지를 위해 Redisson 분산락으로 한 인스턴스만 flush.
+ *
+ *  R 결과  (재현 테스트 ArticleViewConcurrencyTest, 로컬/상대비교)
+ *          ┌──────────────────────┬──── 전(naive) ────┬─ DB 원자 UPDATE ─┬─ 후(write-back) ─┐
+ *          │ 1000 동시조회 결과   │ ~110 (89% 유실)   │ 1000            │ 1000 (유실 0)    │
+ *          │ 조회 1000건당 DB 쓰기│ 1000회            │ 1000회          │ 1회 (flush당)    │
+ *          │ 1000건 버스트 처리시간│ 1.5~1.6s         │ 1.4~1.6s        │ 0.5~0.53s       │
+ *          └──────────────────────┴──────────────────┴─────────────────┴──────────────────┘
+ *          DB 원자 UPDATE 버전은 solution/article-db-atomic 브랜치.
+ *
+ *  트레이드오프  Redis 유실 시 "마지막 flush ~ 장애" 사이 증가분 손실. 조회수라 감내 가능.
+ *              (쿠폰이라면 감내 불가 → 그쪽은 보상 + DB 유니크 제약으로 방어)
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 @Service
 @RequiredArgsConstructor
 public class ArticleViewService {
@@ -81,6 +108,9 @@ public class ArticleViewService {
             }
             int flushed = 0;
             for (String idStr : ids) {
+                // 순서 중요: dirty 에서 먼저 빼고(SREM) 그 다음 델타를 가져온다(GETDEL).
+                // 그 사이 새 조회가 들어오면 델타 키가 다시 생기고 dirty 에 다시 등록되므로
+                // "flush 중 들어온 조회"를 잃지 않는다. 반대 순서면 그 조회분이 사라진다.
                 redis.opsForSet().remove(DIRTY_KEY, idStr);
                 String taken = redis.opsForValue().getAndDelete(deltaKey(Long.parseLong(idStr)));
                 long delta = (taken == null) ? 0L : Long.parseLong(taken);

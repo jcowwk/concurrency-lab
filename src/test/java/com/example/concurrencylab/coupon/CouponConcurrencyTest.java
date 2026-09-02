@@ -14,13 +14,18 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * naive 구현의 동시성 문제를 재현하는 테스트.
+ * 쿠폰 초과/중복 발급 동시성 문제를 재현하고 해결을 검증하는 테스트.
  *
- * 아래 두 테스트는 "올바른 결과"를 단언한다. naive(CouponIssueService) 에서는
- * 실패하는 것이 정상이며, 그 실패가 곧 문제의 증명이다.
- * 이후 해결책 커밋에서 같은 테스트가 통과하도록 만든다.
+ * 전략: "올바른 결과"를 단언한다. naive 구현에서는 실패(=문제 재현),
+ *      각 해결책 커밋/브랜치에서 통과(GREEN)로 바뀐다.
  *
- * 사전 조건: docker compose up -d 로 PostgreSQL 이 떠 있어야 한다.
+ * 실행 결과 (콘솔의 [초과 발급] / [중복 발급] 줄):
+ *   전(naive)  초과: 발급이력 300 / issuedCount 34 / 거부 0
+ *              중복: 발급이력 9~10
+ *   후(main)   초과: 발급이력 100 / issuedCount 100 / 거부 200
+ *              중복: 발급이력 1
+ *
+ * 사전 조건: docker compose up -d (PostgreSQL 5432, Redis 6380)
  */
 @SpringBootTest
 class CouponConcurrencyTest {
@@ -59,8 +64,8 @@ class CouponConcurrencyTest {
                 "[초과 발급] 요청 %d / issuedCount=%d / 발급이력 row=%d / 성공=%d / 실패=%d%n",
                 threadCount, coupon.getIssuedCount(), issuedRows, result.success(), result.failure());
 
-        // naive 에서는 lost update 로 issuedCount 가 100 에 멈추고,
-        // check-then-act race 로 issuedRows 는 100 을 넘어간다.
+        // naive: check-then-act race 로 issuedRows 가 300 (거부 0), lost update 로 issuedCount 는 34.
+        // 해결 후: 정확히 100/100, 초과분 200 은 "소진" 예외로 실패 카운트.
         assertThat(coupon.getIssuedCount()).isEqualTo(TOTAL_QUANTITY);
         assertThat(issuedRows).isEqualTo(TOTAL_QUANTITY);
         assertThat(result.success()).isEqualTo(TOTAL_QUANTITY);
@@ -83,7 +88,8 @@ class CouponConcurrencyTest {
                 "[중복 발급] 요청 %d / userId=%d 발급이력 row=%d / 성공=%d / 실패=%d%n",
                 threadCount, userId, issuedRows, result.success(), result.failure());
 
-        // naive 에서는 existsBy 검사를 여러 스레드가 동시에 통과해 2건 이상 insert 된다.
+        // naive: existsBy 검사를 여러 스레드가 동시 통과 → 9~10건 insert.
+        // 해결 후: 유니크 제약(+ Redis SISMEMBER)으로 1건, 나머지 99 는 "이미 발급" 예외.
         assertThat(issuedRows).isEqualTo(1);
         assertThat(result.success()).isEqualTo(1);
         assertThat(result.failure()).isEqualTo(threadCount - 1);

@@ -12,6 +12,11 @@
 1. 선착순 한정수량 쿠폰 발급 (수량 제한, 유저당 1회)
 2. 게시글 조회수 증가 (동시 조회 시 카운트 유실 방지)
 
+## 문서
+- [docs/study-guide.md](docs/study-guide.md) — 무엇을 어떤 순서로 보고, 어떻게 실행/로그 확인/테스트하나
+- [docs/portfolio-summary.md](docs/portfolio-summary.md) — 문제·해결·성과(전/후 수치) + 면접용 판단 과정 설명
+- 각 소스 파일 상단의 `STAR` 주석 — 파일별 상황/과제/조치/결과
+
 ## 실행
 ```bash
 docker compose up -d          # postgres(5432), redis(6380)

@@ -13,13 +13,16 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 조회수 유실(lost update)을 재현/검증하는 테스트.
+ * 게시글 조회수 유실(lost update)을 재현하고 해결을 검증하는 테스트.
  *
- * naive 에서는 최종 viewCount 가 요청 수보다 작아져 실패했다(카운트가 조용히 사라짐).
- * Redis write-back 방식에서는 INCR 이 원자적이라 유실이 없고, flushViewCounts() 로
- * 지연 반영한 뒤의 DB view_count 가 정확히 요청 수와 같아야 한다(최종 일관성).
+ * 실행 결과 (콘솔의 [조회수 유실] 줄):
+ *   전(naive)          viewCount ~110 / 유실 ~890  (1000 요청, 예외 0)
+ *   후(main, write-back) viewCount 1000 / 유실 0
  *
- * 사전 조건: docker compose up -d 로 PostgreSQL, Redis 가 떠 있어야 한다.
+ * main 은 최종 일관성이라, 동시 조회 뒤 flushViewCounts() 로 델타를 DB 에 내린 다음
+ * 값을 확인한다. (INCR 자체는 원자적이라 Redis 쪽 카운트는 항상 정확하다.)
+ *
+ * 사전 조건: docker compose up -d (PostgreSQL 5432, Redis 6380)
  */
 @SpringBootTest
 class ArticleViewConcurrencyTest {

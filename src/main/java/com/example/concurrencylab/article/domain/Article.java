@@ -34,11 +34,15 @@ public class Article {
     }
 
     /**
-     * 조회수를 1 증가시킨다.
-     * naive 버전: 현재 값을 읽어 +1 한 값을 다시 필드에 넣는 read-modify-write.
-     * 여러 트랜잭션이 같은 값을 읽고 각자 +1 하면 증가분이 유실된다(lost update).
-     * flush 시점에 UPDATE article SET view_count = <절대값> 이 나가므로,
-     * 동시 요청은 서로의 증가분을 덮어쓴다.
+     * [naive 참고용 - main(Redis write-back)에서는 호출되지 않음]
+     *
+     * 현재 값을 읽어 +1 한 값을 다시 필드에 넣는 read-modify-write.
+     * 더티체킹으로 flush 시점에 UPDATE article SET view_count = <절대값> 이 나가는데,
+     * 동시 트랜잭션이 같은 값을 읽고 같은 절대값을 써서 증가분이 유실된다(lost update).
+     * → 1000 동시조회 시 최종 ~110 (89% 유실). 이 문제를 재현하는 게 시작점이었다.
+     *
+     * 해결 흐름:  이 방식(naive) → DB 원자 UPDATE(solution/article-db-atomic)
+     *            → Redis INCR write-back(main, ArticleViewService.increaseViewCount)
      */
     public void increaseViewCount() {
         this.viewCount += 1;
