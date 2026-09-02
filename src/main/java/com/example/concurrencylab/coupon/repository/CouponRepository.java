@@ -1,22 +1,18 @@
 package com.example.concurrencylab.coupon.repository;
 
 import com.example.concurrencylab.coupon.domain.Coupon;
-import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-
-import java.util.Optional;
 
 public interface CouponRepository extends JpaRepository<Coupon, Long> {
 
     /**
-     * 발급 시 사용하는 조회. SELECT ... FOR UPDATE 로 해당 쿠폰 row 에 배타 락을 건다.
-     * 같은 쿠폰에 대한 동시 발급 요청은 이 지점에서 직렬화되므로,
-     * 이어지는 read-modify-write (issuedCount += 1) 의 lost update 가 사라진다.
+     * 발급 수량 +1. 초과 여부는 이미 Redis Lua 스크립트가 판정했으므로 조건 없이 증가시킨다.
+     * DB 의 issued_count 는 Redis 상태를 뒤따라 기록하는 사본이다. 영향 행 수 0 = 쿠폰 없음.
      */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("select c from Coupon c where c.id = :id")
-    Optional<Coupon> findByIdForUpdate(@Param("id") Long id);
+    @Modifying
+    @Query("update Coupon c set c.issuedCount = c.issuedCount + 1 where c.id = :id")
+    int increaseIssuedCount(@Param("id") Long id);
 }
