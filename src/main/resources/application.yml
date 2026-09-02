@@ -8,6 +8,11 @@ spring:
     password: lab
     driver-class-name: org.postgresql.Driver
 
+  data:
+    redis:
+      host: localhost
+      port: 6380
+
   jpa:
     hibernate:
       # 학습용: 애플리케이션을 띄울 때마다 스키마를 새로 만든다.

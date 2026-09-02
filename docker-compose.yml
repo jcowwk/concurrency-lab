@@ -11,13 +11,13 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
-  # Redis 는 뒤쪽 단계(분산락 / 원자적 연산)에서 사용한다.
-  # 인프라 뼈대는 처음부터 같이 올려둔다.
+  # Redis: 분산락(Redisson) / 원자적 연산(Lua) 단계에서 사용.
+  # 호스트 포트는 6380 (다른 로컬 Redis 와 6379 충돌을 피하려고 옮김).
   redis:
     image: redis:7-alpine
     container_name: concurrency-lab-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
