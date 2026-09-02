@@ -5,6 +5,7 @@ import com.example.concurrencylab.coupon.domain.CouponIssue;
 import com.example.concurrencylab.coupon.repository.CouponIssueRepository;
 import com.example.concurrencylab.coupon.repository.CouponRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,17 +22,20 @@ public class CouponIssueService {
     }
 
     /**
-     * 쿠폰 발급 - naive 버전 (동시성 미고려).
+     * 쿠폰 발급.
      *
-     * 정상 흐름(happy path)만 고려한 구조:
      *   1) 쿠폰 조회
-     *   2) 중복 발급 검사        (check)
-     *   3) 잔여 수량 검사        (check)
-     *   4) 발급 수량 +1, 발급 이력 저장  (act)
+     *   2) 중복 발급 검사 (existsBy)  - 1차 방어. 정상 케이스에서 불필요한 INSERT/예외를 피한다.
+     *   3) 잔여 수량 검사
+     *   4) 발급 수량 +1, 발급 이력 저장
      *
-     * check(2,3) 와 act(4) 는 원자적이지 않다. 두 검사를 통과한 뒤 act 하기까지의
-     * 사이에 다른 트랜잭션이 끼어들어 같은 검사를 통과해 버릴 수 있다.
-     * 단일 스레드로 호출하면 항상 정상 동작하므로 버그가 눈에 띄지 않는다.
+     * 중복 발급의 최종 보장은 (couponId, userId) DB 유니크 제약이 담당한다.
+     * 동시 요청이 2) existsBy 를 함께 통과하더라도, 두 번째 INSERT 는 제약에 걸려
+     * DataIntegrityViolationException 이 되고, 이를 잡아 IllegalStateException 으로 변환한다.
+     * saveAndFlush 로 INSERT 를 이 자리에서 실행해야 제약 위반을 여기서 포착할 수 있다
+     * (save 만 하면 트랜잭션 커밋 시점에 INSERT 가 나가 catch 밖에서 터진다).
+     *
+     * 3) 잔여 수량(초과 발급)은 이 커밋에서 다루지 않는다 - read-modify-write 이므로 여전히 깨진다.
      */
     @Transactional
     public void issue(Long couponId, Long userId) {
@@ -48,6 +52,11 @@ public class CouponIssueService {
 
         // coupon 은 영속 상태이므로 필드 변경만으로 flush 시점에 UPDATE 가 나간다(더티 체킹).
         coupon.increaseIssuedCount();
-        couponIssueRepository.save(new CouponIssue(couponId, userId));
+        try {
+            couponIssueRepository.saveAndFlush(new CouponIssue(couponId, userId));
+        } catch (DataIntegrityViolationException e) {
+            // existsBy 를 동시에 통과한 요청이 여기서 걸린다.
+            throw new IllegalStateException("이미 발급받은 쿠폰입니다. userId=" + userId);
+        }
     }
 }
