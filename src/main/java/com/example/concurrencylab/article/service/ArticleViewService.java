@@ -18,25 +18,20 @@ public class ArticleViewService {
     }
 
     /**
-     * 조회수 증가 - naive 버전 (동시성 미고려).
+     * 조회수 증가 - 원자적 UPDATE.
      *
-     *   1) 게시글 조회        (read)
-     *   2) viewCount + 1      (modify)
-     *   3) flush 시 UPDATE    (write)
+     * Article 엔티티를 읽어 필드를 고치지 않고, UPDATE article SET view_count = view_count + 1
+     * 한 문장으로 처리한다. 증가 연산이 DB row 락 안에서 일어나므로 동시 요청이 서로의
+     * 증가분을 덮어쓰지 않는다(lost update 제거). 영향 행 수가 0 이면 없는 게시글이다.
      *
-     * read 로 얻은 값을 기준으로 modify 하고 write 하기 때문에, 두 트랜잭션이
-     * 같은 viewCount 를 읽으면 둘 다 같은 값을 써서 한쪽 증가분이 사라진다.
-     * PostgreSQL 기본 격리 수준(READ COMMITTED)에서는 서로의 미커밋 증가가
-     * 보이지 않으므로 write-write 충돌로도 감지되지 않는다.
-     *
-     * 단일 스레드로 N 번 호출하면 항상 viewCount == N 이라 문제가 드러나지 않는다.
+     * 카운터 증가만 하고 그 결과값으로 분기하는 로직이 없으므로, 락도 재시도도 필요 없는
+     * 이 방식이 조회수에는 가장 잘 맞는다.
      */
     @Transactional
     public void increaseViewCount(Long articleId) {
-        Article article = articleRepository.findById(articleId)
-                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 게시글: " + articleId));
-
-        // article 은 영속 상태이므로 필드 변경만으로 flush 시점에 UPDATE 가 나간다(더티 체킹).
-        article.increaseViewCount();
+        int updated = articleRepository.increaseViewCount(articleId);
+        if (updated == 0) {
+            throw new IllegalArgumentException("존재하지 않는 게시글: " + articleId);
+        }
     }
 }

@@ -23,8 +23,8 @@ docker compose up -d          # postgres, redis
 2. `feat: 게시글 조회수 증가 API 초기 구현 (동시성 미고려)`
 3. `test: 쿠폰 발급 / 조회수 증가 동시성 문제 재현 테스트` — ExecutorService + start gate 로 동시 요청, 올바른 결과를 단언(naive 에서 실패 = 재현)
 4. `fix(coupon): 중복 발급 방지 - 유니크 제약`
-5. `fix(coupon): 초과 발급 방지 - 비관적 락` ← main
-6. 조회수 유실 해결 (예정: 원자적 UPDATE → Redis)
+5. `fix(coupon): 초과 발급 방지 - 비관적 락`
+6. `fix(article): 조회수 유실 방지 - 원자적 UPDATE` ← main
 7. Redis 분산락(Redisson) → Redis 원자연산 / Lua (예정)
 
 각 단계의 트레이드오프 정리는 커밋 메시지 본문과 이 README 에 누적한다.
@@ -38,6 +38,9 @@ docker compose up -d          # postgres, redis
 | 조회수 유실 | 1000회 동시 조회 | 1000 | ~100 (예외 없이 유실) |
 
 숫자는 스레드 스케줄링에 따라 실행마다 달라진다. 방향(초과 / 중복 / 유실)은 항상 재현된다.
+
+현재 `main` 기준 `CouponConcurrencyTest`, `ArticleViewConcurrencyTest` 전부 GREEN
+(초과 발급 100/100·200 거부, 중복 발급 1건, 조회수 1000/1000 유실 0).
 
 ## 초과 발급 해결책 비교 (브랜치)
 
