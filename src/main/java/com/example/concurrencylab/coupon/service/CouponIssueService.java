@@ -26,18 +26,19 @@ public class CouponIssueService {
     }
 
     /**
-     * 쿠폰 발급 - Redis 분산락(Redisson).
-     *
-     * 쿠폰 단위 락("coupon:lock:{id}")으로 임계구역을 보호한다. JVM synchronized 와 달리
-     * 애플리케이션 인스턴스가 여러 대여도 Redis 를 통해 상호배제가 성립한다.
-     *
-     * 락 경계는 트랜잭션 경계 밖에 둔다. 실제 발급은 CouponIssueProcessor 가 트랜잭션으로
-     * 수행하고, 그 커밋이 끝난 뒤에야 finally 에서 unlock 한다. issue() 에 @Transactional 을
-     * 붙이면 커밋이 unlock 이후에 일어나 그 틈에 다른 노드가 stale read 로 끼어든다.
-     *
-     * leaseTime 을 명시하지 않아 Redisson watchdog 이 락을 자동 연장한다. 다만 프로세스가
-     * STW(GC)로 얼어붙으면 watchdog 도 멈춰 락이 만료되고, 두 노드가 동시에 임계구역에
-     * 들어갈 수 있다(분산락의 근본 한계). 최종 방어선으로 DB 유니크 제약은 유지한다.
+     * ─── 초과 발급 해결안 ④ Redis 분산락 (Redisson) (STAR) ──────────────────
+     *  S 앱 인스턴스가 여러 대면 JVM synchronized 로는 상호배제가 안 된다(각 JVM 별개).
+     *  T 여러 노드에 걸쳐 같은 쿠폰 발급을 직렬화. 300 동시요청 → 정확히 100건.
+     *  A 쿠폰 단위 락 RLock("coupon:lock:{id}") 으로 임계구역 보호. 락은 Redis 에 있고
+     *    데이터는 여전히 DB. 실제 발급은 CouponIssueProcessor 가 트랜잭션으로 수행하고,
+     *    그 커밋이 끝난 뒤 finally 에서 unlock 한다.
+     *  R 발급 300→100. 300건 처리 1.6s대 — 직렬화 + 매 요청 Redis 왕복이 더해짐.
+     *  핵심 함정  락 해제는 반드시 트랜잭션 커밋 뒤. issue() 에 @Transactional 을 붙이면
+     *            커밋이 unlock 이후로 밀려, 그 틈에 다른 노드가 커밋 전 상태를 읽는다
+     *            (stale read). 그래서 발급 로직을 별도 빈으로 분리.
+     *  한계  leaseTime 만료 + STW(GC) 가 겹치면 두 노드가 동시 진입 가능(분산락의 근본 한계).
+     *        → DB 유니크 제약을 최종 방어선으로 유지. Redis 다운 = 발급 불가(가용성 종속).
+     * ────────────────────────────────────────────────────────────────────────
      */
     public void issue(Long couponId, Long userId) {
         RLock lock = redissonClient.getLock("coupon:lock:" + couponId);
