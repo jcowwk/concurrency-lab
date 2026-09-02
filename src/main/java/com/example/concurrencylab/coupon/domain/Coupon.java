@@ -4,6 +4,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.Version;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -28,6 +29,14 @@ public class Coupon {
 
     /** 현재까지 발급된 수량 */
     private int issuedCount;
+
+    /**
+     * 낙관적 락 버전. UPDATE 시 WHERE version = ? 로 비교되고, 불일치하면
+     * ObjectOptimisticLockingFailureException 이 발생한다. 락을 미리 잡지 않고
+     * "커밋 시점에 내가 읽은 이후 아무도 안 바꿨는지" 만 검사한다.
+     */
+    @Version
+    private Long version;
 
     public Coupon(String name, int totalQuantity) {
         this.name = name;
