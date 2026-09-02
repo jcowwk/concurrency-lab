@@ -1,20 +1,24 @@
 package com.example.concurrencylab.coupon.service;
 
 import com.example.concurrencylab.coupon.domain.Coupon;
-import com.example.concurrencylab.coupon.domain.CouponIssue;
-import com.example.concurrencylab.coupon.repository.CouponIssueRepository;
 import com.example.concurrencylab.coupon.repository.CouponRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
 public class CouponIssueService {
 
+    private static final long LOCK_WAIT_SECONDS = 10;
+
     private final CouponRepository couponRepository;
-    private final CouponIssueRepository couponIssueRepository;
+    private final CouponIssueProcessor couponIssueProcessor;
+    private final RedissonClient redissonClient;
 
     @Transactional
     public Long createCoupon(String name, int totalQuantity) {
@@ -22,43 +26,38 @@ public class CouponIssueService {
     }
 
     /**
-     * 쿠폰 발급.
+     * 쿠폰 발급 - Redis 분산락(Redisson).
      *
-     *   1) 쿠폰 조회
-     *   2) 중복 발급 검사 (existsBy)  - 1차 방어. 정상 케이스에서 불필요한 INSERT/예외를 피한다.
-     *   3) 잔여 수량 검사
-     *   4) 발급 수량 +1, 발급 이력 저장
+     * 쿠폰 단위 락("coupon:lock:{id}")으로 임계구역을 보호한다. JVM synchronized 와 달리
+     * 애플리케이션 인스턴스가 여러 대여도 Redis 를 통해 상호배제가 성립한다.
      *
-     * 중복 발급의 최종 보장은 (couponId, userId) DB 유니크 제약이 담당한다.
-     * 동시 요청이 2) existsBy 를 함께 통과하더라도, 두 번째 INSERT 는 제약에 걸려
-     * DataIntegrityViolationException 이 되고, 이를 잡아 IllegalStateException 으로 변환한다.
-     * saveAndFlush 로 INSERT 를 이 자리에서 실행해야 제약 위반을 여기서 포착할 수 있다
-     * (save 만 하면 트랜잭션 커밋 시점에 INSERT 가 나가 catch 밖에서 터진다).
+     * 락 경계는 트랜잭션 경계 밖에 둔다. 실제 발급은 CouponIssueProcessor 가 트랜잭션으로
+     * 수행하고, 그 커밋이 끝난 뒤에야 finally 에서 unlock 한다. issue() 에 @Transactional 을
+     * 붙이면 커밋이 unlock 이후에 일어나 그 틈에 다른 노드가 stale read 로 끼어든다.
      *
-     * 초과 발급은 findByIdForUpdate (SELECT ... FOR UPDATE) 로 막는다. 같은 쿠폰에 대한
-     * 동시 발급이 쿠폰 row 배타 락으로 직렬화되므로, 3) 잔여 수량 검사와 4) issuedCount += 1
-     * 이 한 트랜잭션 안에서 원자적으로 수행된다.
+     * leaseTime 을 명시하지 않아 Redisson watchdog 이 락을 자동 연장한다. 다만 프로세스가
+     * STW(GC)로 얼어붙으면 watchdog 도 멈춰 락이 만료되고, 두 노드가 동시에 임계구역에
+     * 들어갈 수 있다(분산락의 근본 한계). 최종 방어선으로 DB 유니크 제약은 유지한다.
      */
-    @Transactional
     public void issue(Long couponId, Long userId) {
-        Coupon coupon = couponRepository.findByIdForUpdate(couponId)
-                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 쿠폰: " + couponId));
-
-        if (couponIssueRepository.existsByCouponIdAndUserId(couponId, userId)) {
-            throw new IllegalStateException("이미 발급받은 쿠폰입니다. userId=" + userId);
-        }
-
-        if (coupon.isSoldOut()) {
-            throw new IllegalStateException("쿠폰이 모두 소진되었습니다. couponId=" + couponId);
-        }
-
-        // coupon 은 영속 상태이므로 필드 변경만으로 flush 시점에 UPDATE 가 나간다(더티 체킹).
-        coupon.increaseIssuedCount();
+        RLock lock = redissonClient.getLock("coupon:lock:" + couponId);
+        boolean acquired;
         try {
-            couponIssueRepository.saveAndFlush(new CouponIssue(couponId, userId));
-        } catch (DataIntegrityViolationException e) {
-            // existsBy 를 동시에 통과한 요청이 여기서 걸린다.
-            throw new IllegalStateException("이미 발급받은 쿠폰입니다. userId=" + userId);
+            acquired = lock.tryLock(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("발급 처리가 중단되었습니다.", e);
+        }
+        if (!acquired) {
+            throw new IllegalStateException("발급 요청이 몰려 처리하지 못했습니다. 잠시 후 다시 시도해주세요.");
+        }
+
+        try {
+            couponIssueProcessor.issueOnce(couponId, userId);
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 }
