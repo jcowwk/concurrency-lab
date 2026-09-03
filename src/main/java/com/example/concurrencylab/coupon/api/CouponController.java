@@ -3,6 +3,8 @@ package com.example.concurrencylab.coupon.api;
 import com.example.concurrencylab.coupon.api.dto.CreateCouponRequest;
 import com.example.concurrencylab.coupon.api.dto.IssueCouponRequest;
 import com.example.concurrencylab.coupon.service.CouponIssueService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -12,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+@Tag(name = "쿠폰", description = "선착순 한정수량 쿠폰 발급")
 @RestController
 @RequestMapping("/api/coupons")
 @RequiredArgsConstructor
@@ -19,13 +22,15 @@ public class CouponController {
 
     private final CouponIssueService couponIssueService;
 
-    /** 테스트/데모용 쿠폰 생성 (예: 수량 100) */
+    @Operation(summary = "쿠폰 생성", description = "테스트/데모용. 재고(totalQuantity)를 지정해 캠페인 1개를 만든다. 생성된 couponId 반환.")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public Long create(@Valid @RequestBody CreateCouponRequest request) {
         return couponIssueService.createCoupon(request.name(), request.totalQuantity());
     }
 
+    @Operation(summary = "쿠폰 발급",
+            description = "couponId 쿠폰을 userId 에게 발급. 재고 소진 시 409, 이미 받은 유저면 409, 없는 쿠폰이면 404.")
     @PostMapping("/issue")
     @ResponseStatus(HttpStatus.OK)
     public void issue(@Valid @RequestBody IssueCouponRequest request) {
