@@ -15,6 +15,7 @@
 ## 문서
 - [docs/study-guide.md](docs/study-guide.md) — 무엇을 어떤 순서로 보고, 어떻게 실행/로그 확인/테스트하나
 - [docs/portfolio-summary.md](docs/portfolio-summary.md) — 문제·해결·성과(전/후 수치) + 면접용 판단 과정 설명
+- [scripts/README.md](scripts/README.md) — k6 / hey 부하 테스트 (정합성 검증 포함)
 - 각 소스 파일 상단의 `STAR` 주석 — 파일별 상황/과제/조치/결과
 
 ## 실행
