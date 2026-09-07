@@ -20,7 +20,12 @@ public class RedissonConfig {
             @Value("${spring.data.redis.port}") int port) {
         Config config = new Config();
         config.useSingleServer()
-                .setAddress("redis://" + host + ":" + port);
+                .setAddress("redis://" + host + ":" + port)
+                // 장애 시 빠르게 포기 (기본값은 재시도 3회 + 3s 타임아웃이라 체감이 느리다)
+                .setConnectTimeout(2000)
+                .setTimeout(2000)
+                .setRetryAttempts(2)
+                .setRetryInterval(300);
         return Redisson.create(config);
     }
 }

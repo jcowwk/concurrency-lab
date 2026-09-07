@@ -47,6 +47,18 @@ hey -n 1000 -c 50 -m POST -T application/json -D /tmp/dup.json \
 > `hey`/`ab` 는 요청 body 가 고정이라 "userId 를 매번 다르게" 하는 초과 발급 시나리오엔 부적합.
 > 그건 k6 (`__VU`, `__ITER` 로 유일 값 생성) 또는 `seq | xargs -P curl` 를 쓴다.
 
+## Redis 장애 주입 훈련
+
+```bash
+bash scripts/redis-failure-drill.sh     # 앱이 8080 에 떠 있어야 함
+```
+
+- **Part A. 연결 실패** (`docker stop redis`) → 발급이 **503** (fail-safe, ~2s 안에). AOF 로 재기동 시 자가 복구
+- **Part B. 데이터 유실** (`FLUSHALL`) → 발급이 **404** 로 거부 → `POST /api/coupons/{id}/redis-rebuild` (DB 이력으로 Redis 재구축) → 정상화
+
+두 경우 모두 DB 이력은 그대로 = **정합성 안 깨짐**. 재구축 후 발급 재개해도 초과/중복 0.
+자동 테스트 버전은 `CouponRedisRecoveryTest` (FLUSHDB 시나리오).
+
 ## 전/후 비교
 
 같은 스크립트를 naive 커밋에서도 돌려 대조한다.

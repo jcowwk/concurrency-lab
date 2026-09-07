@@ -1,6 +1,7 @@
 package com.example.concurrencylab.coupon.service;
 
 import com.example.concurrencylab.coupon.domain.Coupon;
+import com.example.concurrencylab.coupon.repository.CouponIssueRepository;
 import com.example.concurrencylab.coupon.repository.CouponRepository;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -48,6 +49,7 @@ import java.util.List;
 public class CouponIssueService {
 
     private final CouponRepository couponRepository;
+    private final CouponIssueRepository couponIssueRepository;
     private final CouponIssueProcessor couponIssueProcessor;
     private final StringRedisTemplate redis;
 
@@ -122,5 +124,38 @@ public class CouponIssueService {
             redis.opsForSet().remove(issuedKey(couponId), String.valueOf(userId));   // 발급집합에서 제거
             throw e;
         }
+    }
+
+    /**
+     * ─── Redis 장애 복구: DB 이력으로 Redis 상태 재구축 (STAR) ────────────────
+     *  S Redis 데이터 유실(재시작+AOF 갭 / eviction / 빈 복제본으로 failover) →
+     *    coupon:stock, coupon:issued 가 사라짐. 이 상태에서 발급하면 Lua 가 -2(쿠폰 없음)
+     *    을 반환해 전부 거부된다(fail-safe: 초과·유령 발급은 안 생김).
+     *  T 서비스를 다시 정상화. 이미 발급받은 유저는 계속 중복 거부, 남은 재고는 정확히.
+     *  A DB 는 발급 이력(coupon_issue) 전체를 갖고 있으므로 그걸로 Redis 를 되살린다.
+     *       coupon:issued:{id} = coupon_issue 의 user_id 전체
+     *       coupon:stock:{id}  = total_quantity - 발급 이력 수
+     *    발급집합을 먼저 채우고 재고를 마지막에 SET 한다. 순서가 반대면 "재고는 보이는데
+     *    발급집합이 빈" 창이 생겨 Lua 중복검사가 잠깐 뚫린다(그래도 DB 유니크 제약이 막지만
+     *    창을 줄이는 게 낫다).
+     *  R 재구축 후 발급 재개 시 중복 0 / 초과 0 (재현: CouponRedisRecoveryTest).
+     *
+     *  전제  발급이 잠잠할 때(점검/복구 시점) 실행. 트래픽 중 실행하면 "DB 카운트 읽기 ~
+     *        stock SET" 사이 커밋된 발급만큼 재고가 몇 개 어긋날 수 있다(중복은 유니크 제약이 방어).
+     * ────────────────────────────────────────────────────────────────────────
+     */
+    public void rebuildRedisState(Long couponId) {
+        Coupon coupon = couponRepository.findById(couponId)
+                .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 쿠폰: " + couponId));
+
+        List<Long> issuedUserIds = couponIssueRepository.findUserIdsByCouponId(couponId);
+        long remaining = coupon.getTotalQuantity() - issuedUserIds.size();
+
+        redis.delete(issuedKey(couponId));
+        if (!issuedUserIds.isEmpty()) {
+            String[] members = issuedUserIds.stream().map(String::valueOf).toArray(String[]::new);
+            redis.opsForSet().add(issuedKey(couponId), members);
+        }
+        redis.opsForValue().set(stockKey(couponId), String.valueOf(Math.max(remaining, 0)));
     }
 }

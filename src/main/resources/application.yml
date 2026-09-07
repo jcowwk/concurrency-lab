@@ -12,6 +12,9 @@ spring:
     redis:
       host: localhost
       port: 6380
+      # 장애 시 빠르게 실패시킨다 (Lettuce 기본 command timeout 은 60s → 요청이 1분 매달림)
+      timeout: 2s
+      connect-timeout: 2s
 
   jpa:
     hibernate:
