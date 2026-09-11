@@ -67,6 +67,19 @@ docker compose ps             # 두 컨테이너가 Up 인지 확인
 
 `BUILD SUCCESSFUL` 이면 3개 다 통과. (naive 커밋에서 돌리면 `BUILD FAILED` 가 정상 — 문제가 재현됐다는 뜻)
 
+### 통합 테스트 vs 단위 테스트
+
+| | 통합 테스트 (`@SpringBootTest`) | 단위 테스트 (JUnit + Mockito) |
+|---|---|---|
+| 대상 | `*ConcurrencyTest`, `CouponRedisRecoveryTest` | `*ServiceTest`, `CouponIssueProcessorTest` (`.../service/` 패키지) |
+| 필요 인프라 | PostgreSQL + Redis (`docker compose up -d`) | **없음** |
+| 검증 대상 | 실제 동시성 결과(락/원자성이 진짜 지켜지나), 장애 복구 | 분기 로직(어떤 입력에 어떤 예외, 어떤 순서로 호출하나) |
+| 실행 |  `./gradlew cleanTest test --tests '*ConcurrencyTest'` | `./gradlew cleanTest test --tests '*.service.*'` (Docker 꺼져 있어도 통과) |
+
+동시성 버그(lost update, race)는 mock으로 재현이 안 되므로 통합 테스트가 필수고, 예외 분기·보상
+로직(`issue()` 의 -1/-2/0/1 처리, Redis 보상, flush 의 SREM→GETDEL 순서 등)은 단위 테스트가
+훨씬 빠르고 정확하게 짚어준다. 둘 다 있어야 완전하다.
+
 ---
 
 ## 2. 앱 띄우고 REST 로 직접 때려보기
@@ -153,6 +166,7 @@ docker exec concurrency-lab-postgres psql -U lab -d concurrency_lab -c \
 | 3 | [lua/coupon_issue.lua](../src/main/resources/lua/coupon_issue.lua) | 중복검사→재고차감→발급기록을 한 덩어리로 원자 실행 |
 | 4 | [CouponIssueService.java](../src/main/java/com/example/concurrencylab/coupon/service/CouponIssueService.java) (main) | Lua 판정 → DB 사본 기록 → 실패 시 Redis 보상 |
 | 5 | [CouponIssueProcessor.java](../src/main/java/com/example/concurrencylab/coupon/service/CouponIssueProcessor.java) | DB 기록을 별도 `@Transactional` 빈으로 분리한 이유(=락/보상은 트랜잭션 밖) |
+| 6 | [CouponIssueServiceTest.java](../src/test/java/com/example/concurrencylab/coupon/service/CouponIssueServiceTest.java) · [CouponIssueProcessorTest.java](../src/test/java/com/example/concurrencylab/coupon/service/CouponIssueProcessorTest.java) | 단위 테스트로 4/5 의 분기(-1/-2/0/1, 보상, 유니크 제약 변환)를 Mockito 로 하나씩 확인 |
 
 ### 게시글 조회수 (카운트 유실)
 
@@ -161,6 +175,7 @@ docker exec concurrency-lab-postgres psql -U lab -d concurrency_lab -c \
 | 1 | [Article.java](../src/main/java/com/example/concurrencylab/article/domain/Article.java) `increaseViewCount()` | read-modify-write → lost update (naive) |
 | 2 | [ArticleRepository.java](../src/main/java/com/example/concurrencylab/article/repository/ArticleRepository.java) | 증분 UPDATE `view_count = view_count + :delta` |
 | 3 | [ArticleViewService.java](../src/main/java/com/example/concurrencylab/article/service/ArticleViewService.java) | 조회 = Redis `INCR` / 주기적 `flushViewCounts()` = 분산락 + SREM→GETDEL 순서 |
+| 4 | [ArticleViewServiceTest.java](../src/test/java/com/example/concurrencylab/article/service/ArticleViewServiceTest.java) | 단위 테스트로 락 미획득/빈 dirty/예외 시 unlock 등 엣지케이스를 Mockito 로 확인 |
 
 ---
 
